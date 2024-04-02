@@ -1,0 +1,54 @@
+name: Static build
+on:
+  push:
+
+jobs:
+  build:
+    name: Static build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: jirutka/setup-alpine@v1
+        with:
+          packages: bash build-base cmake elfutils git hiredis-dev zstd-dev ninja-build perl pkgconf python3 redis zstd
+
+      - name: Get source
+        run: |
+          TAG="v4.9.1"
+          cd
+          git clone -b "$TAG" https://github.com/ccache/ccache.git "$GITHUB_WORKSPACE"
+
+      - name: Build and test
+        shell: alpine.sh {0}
+        run: |
+          export PATH="/usr/lib/ninja-build/bin:$PATH"
+          ci/build
+        env:
+          CMAKE_GENERATOR: Ninja
+          CMAKE_PARAMS: >-
+            -DCCACHE_EXTRA_LIBS=-static
+            -DCMAKE_BUILD_TYPE=Release
+            -DSTATIC_LINK=ON
+          #  -DHIREDIS_FROM_INTERNET=OFF
+          CTEST_OUTPUT_ON_FAILURE: ON
+          VERBOSE: 1
+
+      - name: Package
+        run: |
+          set -x
+          ls -lR build/ccache
+          ldd build/ccache || true
+          build/ccache --version
+          CCACHE_VERSION="$(build/ccache --version | awk '{print $3; exit}')"
+          echo CCACHE_VERSION="$CCACHE_VERSION" >> $GITHUB_ENV
+          zstd < build/ccache > ccache-linux-x86_64-static-$CCACHE_VERSION.zst
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ccache-linux-x86_64-static-${{ env.CCACHE_VERSION }}.zst
+          make_latest: true
