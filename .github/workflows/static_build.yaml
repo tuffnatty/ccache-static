@@ -5,15 +5,39 @@ on:
 jobs:
   build:
     name: Static build
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - name: linux-x86_64
+            runner: ubuntu-latest
+          - name: macos-x86_64
+            runner: macos-12
+    runs-on: ${{ matrix.os.runner }}
 
     permissions:
       contents: write
 
     steps:
-      - uses: jirutka/setup-alpine@v1
+      - if: startswith(matrix.os.name, 'linux-')
+        uses: jirutka/setup-alpine@v1
         with:
           packages: bash build-base cmake elfutils git hiredis-dev zstd-dev ninja-build perl pkgconf python3 redis zstd
+
+      - if: startswith(matrix.os.name, 'macos-')
+        run: |
+          brew install cmake ninja hiredis zstd
+
+      - name: Configure environment
+        run: |
+          set -x
+          case "${{ matrix.os.name }}" in
+            linux-*)
+              echo 'the_ldd=ldd' >> $GITHUB_ENV ;;
+            macos-*)
+              echo 'the_ldd=otool -L' >> $GITHUB_ENV
+              ln -s $(which bash) /usr/local/bin/alpine.sh ;;
+          esac
 
       - name: Get source
         run: |
@@ -34,21 +58,22 @@ jobs:
             -DSTATIC_LINK=ON
           #  -DHIREDIS_FROM_INTERNET=OFF
           CTEST_OUTPUT_ON_FAILURE: ON
+          MACOSX_DEPLOYMENT_TARGET: "10.15"  # Earlier versions don't support std::filesystem
           VERBOSE: 1
 
       - name: Package
         run: |
           set -x
           ls -lR build/ccache
-          ldd build/ccache || true
+          $the_ldd build/ccache || true
           build/ccache --version
           CCACHE_VERSION="$(build/ccache --version | awk '{print $3; exit}')"
           echo CCACHE_VERSION="$CCACHE_VERSION" >> $GITHUB_ENV
-          zstd < build/ccache > ccache-linux-x86_64-static-$CCACHE_VERSION.zst
+          zstd < build/ccache > ccache-${{ matrix.os.name }}-static-$CCACHE_VERSION.zst
 
       - name: Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: ccache-linux-x86_64-static-${{ env.CCACHE_VERSION }}.zst
+          files: ccache-${{ matrix.os.name }}-static-${{ env.CCACHE_VERSION }}.zst
           make_latest: true
